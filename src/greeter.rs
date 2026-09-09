@@ -279,8 +279,6 @@ pub fn main() -> Result<(), Box<dyn Error>> {
         sessions
     };
 
-    let logind_available = cfg!(feature = "logind") && crate::logind::is_available();
-
     let flags = Flags {
         user_icons: user_datas
             .iter_mut()
@@ -290,7 +288,10 @@ pub fn main() -> Result<(), Box<dyn Error>> {
         sessions,
         greeter_config,
         greeter_config_handler,
-        logind_available,
+        #[cfg(feature = "logind")]
+        logind_available: crate::logind::is_available(),
+        #[cfg(not(feature = "logind"))]
+        logind_available: false,
     };
 
     let settings = Settings::default().no_main_window(true);
