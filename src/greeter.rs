@@ -301,6 +301,231 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Finds a one-to-one pairing between every output in `configured` (a saved
+/// per-user display layout, read from `outputs.ron` via
+/// `cosmic-comp`/`cosmic_comp_config::output::randr`) and some output in
+/// `live` (the greeter session's current `cosmic-randr` output list)
+/// identifying the same physical display - or `None` if any `configured`
+/// output has no match at all.
+///
+/// Mirrors `cosmic-comp-config::output::comp::find_output_configs`'s
+/// approach on the `cosmic-comp` side: prefer EDID serial equality, but only
+/// when that serial isn't shared by another output being compared on either
+/// side (some displays report a manufacturer-default placeholder serial
+/// identical across every unit of that model - confirmed on real hardware), falling
+/// back to today's name+make+model equality otherwise. `configured`/`live`
+/// are always small (a handful of connected displays at most), so plain
+/// backtracking is more than fast enough.
+fn match_configured_to_live(
+    configured: &List,
+    live: &List,
+) -> Option<Vec<(cosmic_randr_shell::OutputKey, cosmic_randr_shell::OutputKey)>> {
+    fn ambiguous_serials<'a>(
+        outputs: impl Iterator<Item = &'a cosmic_randr_shell::Output>,
+    ) -> std::collections::HashSet<&'a str> {
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for output in outputs {
+            if !output.serial_number.is_empty() {
+                *counts.entry(output.serial_number.as_str()).or_default() += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(s, _)| s)
+            .collect()
+    }
+
+    fn same_display(
+        a: &cosmic_randr_shell::Output,
+        b: &cosmic_randr_shell::Output,
+        ambiguous_a: &std::collections::HashSet<&str>,
+        ambiguous_b: &std::collections::HashSet<&str>,
+    ) -> bool {
+        if !a.serial_number.is_empty()
+            && a.serial_number == b.serial_number
+            && !ambiguous_a.contains(a.serial_number.as_str())
+            && !ambiguous_b.contains(b.serial_number.as_str())
+        {
+            return true;
+        }
+        a.name == b.name && a.make == b.make && a.model == b.model
+    }
+
+    fn backtrack(
+        configured: &[(cosmic_randr_shell::OutputKey, &cosmic_randr_shell::Output)],
+        live: &[(cosmic_randr_shell::OutputKey, &cosmic_randr_shell::Output)],
+        ambiguous_configured: &std::collections::HashSet<&str>,
+        ambiguous_live: &std::collections::HashSet<&str>,
+        i: usize,
+        used: &mut [bool],
+        mapping: &mut Vec<(cosmic_randr_shell::OutputKey, cosmic_randr_shell::OutputKey)>,
+    ) -> bool {
+        if i == configured.len() {
+            return true;
+        }
+        for j in 0..live.len() {
+            if used[j]
+                || !same_display(configured[i].1, live[j].1, ambiguous_configured, ambiguous_live)
+            {
+                continue;
+            }
+            used[j] = true;
+            mapping.push((configured[i].0, live[j].0));
+            if backtrack(
+                configured,
+                live,
+                ambiguous_configured,
+                ambiguous_live,
+                i + 1,
+                used,
+                mapping,
+            ) {
+                return true;
+            }
+            mapping.pop();
+            used[j] = false;
+        }
+        false
+    }
+
+    let configured_outputs: Vec<_> = configured.outputs.iter().collect();
+    let live_outputs: Vec<_> = live.outputs.iter().collect();
+    let ambiguous_configured = ambiguous_serials(configured.outputs.values());
+    let ambiguous_live = ambiguous_serials(live.outputs.values());
+
+    let mut used = vec![false; live_outputs.len()];
+    let mut mapping = Vec::with_capacity(configured_outputs.len());
+    backtrack(
+        &configured_outputs,
+        &live_outputs,
+        &ambiguous_configured,
+        &ambiguous_live,
+        0,
+        &mut used,
+        &mut mapping,
+    )
+    .then_some(mapping)
+}
+
+#[cfg(test)]
+mod output_matching_tests {
+    use super::match_configured_to_live;
+    use cosmic_randr_shell::{List, Output};
+
+    fn output(name: &str, make: &str, model: &str, serial: &str) -> Output {
+        Output {
+            name: name.into(),
+            make: Some(make.into()),
+            model: model.into(),
+            serial_number: serial.into(),
+            ..Output::new()
+        }
+    }
+
+    fn list_of(outputs: Vec<Output>) -> List {
+        let mut list = List::default();
+        for output in outputs {
+            list.outputs.insert(output);
+        }
+        list
+    }
+
+    #[test]
+    fn exact_match() {
+        let configured = list_of(vec![output("DP-3", "Vendor", "Model", "SER-A")]);
+        let live = list_of(vec![output("DP-3", "Vendor", "Model", "SER-A")]);
+        assert!(match_configured_to_live(&configured, &live).is_some());
+    }
+
+    #[test]
+    fn renames_via_serial() {
+        let configured = list_of(vec![
+            output("DP-3", "Vendor", "Model", "SER-A"),
+            output("eDP-1", "Panel", "Panel", ""),
+        ]);
+        // Same two physical displays, external one renumbered DP-3 -> DP-5.
+        let live = list_of(vec![
+            output("DP-5", "Vendor", "Model", "SER-A"),
+            output("eDP-1", "Panel", "Panel", ""),
+        ]);
+
+        let pairs = match_configured_to_live(&configured, &live)
+            .expect("must fall back to serial match across the rename");
+        assert_eq!(pairs.len(), 2);
+
+        for (configured_key, live_key) in pairs {
+            let configured_output = &configured.outputs[configured_key];
+            let live_output = &live.outputs[live_key];
+            assert_eq!(configured_output.serial_number.is_empty(), live_output.serial_number.is_empty());
+            if !configured_output.serial_number.is_empty() {
+                assert_eq!(configured_output.serial_number, live_output.serial_number);
+                assert_eq!(live_output.name, "DP-5");
+            } else {
+                assert_eq!(live_output.name, "eDP-1");
+            }
+        }
+    }
+
+    #[test]
+    fn realigns_permuted_order() {
+        let configured = list_of(vec![
+            output("DP-3", "Vendor", "Model", "SER-A"),
+            output("eDP-1", "Panel", "Panel", ""),
+        ]);
+        // Live order is the opposite of configured order - the case a naive
+        // positional zip would get wrong.
+        let live = list_of(vec![
+            output("eDP-1", "Panel", "Panel", ""),
+            output("DP-9", "Vendor", "Model", "SER-A"),
+        ]);
+
+        let pairs = match_configured_to_live(&configured, &live).expect("must match");
+        for (configured_key, live_key) in pairs {
+            let configured_output = &configured.outputs[configured_key];
+            let live_output = &live.outputs[live_key];
+            if configured_output.name == "DP-3" {
+                assert_eq!(live_output.name, "DP-9");
+            } else {
+                assert_eq!(live_output.name, "eDP-1");
+            }
+        }
+    }
+
+    #[test]
+    fn falls_back_when_no_serial_on_either_side() {
+        let configured = list_of(vec![output("eDP-1", "Panel", "Panel", "")]);
+        let live = list_of(vec![output("eDP-1", "Panel", "Panel", "")]);
+        assert!(match_configured_to_live(&configured, &live).is_some());
+    }
+
+    #[test]
+    fn ignores_ambiguous_shared_serial() {
+        // Two live outputs share a manufacturer-default placeholder serial -
+        // a real, observed case on this project's own hardware, not
+        // hypothetical. The configured entry is on a different connector
+        // than either live output, so trusting the shared serial would risk
+        // matching the wrong physical unit.
+        let configured = list_of(vec![output("DP-3", "Vendor", "Model", "SHARED")]);
+        let live = list_of(vec![
+            output("DP-5", "Vendor", "Model", "SHARED"),
+            output("DP-6", "Vendor", "Model", "SHARED"),
+        ]);
+        // Different output counts here just confirms match_configured_to_live
+        // itself (length-gating happens at the call site); what matters is
+        // that DP-3 does not spuriously match either DP-5 or DP-6 via the
+        // shared serial once name/make/model also fail to match.
+        assert!(match_configured_to_live(&configured, &live).is_none());
+    }
+
+    #[test]
+    fn none_when_a_configured_output_has_no_live_match() {
+        let configured = list_of(vec![output("DP-3", "Vendor", "Model", "SER-A")]);
+        let live = list_of(vec![output("DP-3", "Other Vendor", "Other Model", "SER-B")]);
+        assert!(match_configured_to_live(&configured, &live).is_none());
+    }
+}
+
 #[derive(Clone)]
 pub struct Flags {
     user_datas: Vec<UserData>,
@@ -1793,7 +2018,7 @@ impl cosmic::Application for App {
                     else {
                         return Task::none();
                     };
-                    'outer: for configured_list in cur_user_output_state
+                    for mut configured_list in cur_user_output_state
                         .iter()
                         .filter_map(|s| match KdlDocument::parse(s) {
                             Ok(doc) => Some(doc),
@@ -1816,15 +2041,29 @@ impl cosmic::Application for App {
                             continue;
                         }
 
-                        for o in outputs.outputs.values() {
-                            if configured_list.outputs.values().all(|configured| {
-                                configured.name != o.name
-                                    || configured.make != o.make
-                                    || configured.model != o.model
-                            }) {
-                                continue 'outer;
+                        let Some(pairs) = match_configured_to_live(&configured_list, outputs)
+                        else {
+                            continue;
+                        };
+
+                        // cosmic-randr's own `apply_list` matches by
+                        // name+make+model with no EDID-serial fallback of its
+                        // own (see cosmic-randr's cli/src/main.rs), so a saved
+                        // config referencing a connector name that has since
+                        // renumbered (e.g. a Thunderbolt/USB-C dock replug)
+                        // would silently fail to apply even once matched here.
+                        // Rewrite each matched entry's name to the live
+                        // connector name before handing it off, so the
+                        // downstream exact-name match still succeeds.
+                        for (configured_key, live_key) in pairs {
+                            if let (Some(configured_output), Some(live_output)) = (
+                                configured_list.outputs.get_mut(configured_key),
+                                outputs.outputs.get(live_key),
+                            ) {
+                                configured_output.name.clone_from(&live_output.name);
                             }
                         }
+
                         if list
                             .as_ref()
                             .is_none_or(|old| old.outputs.len() < configured_list.outputs.len())

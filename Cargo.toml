@@ -162,6 +162,18 @@ features = ["advanced-shaping"]
 cctk = { git = "https://github.com/pop-os/cosmic-protocols//", package = "cosmic-client-toolkit", rev = "32283d7" }
 cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols//", rev = "32283d7" }
 
+# Local dev: use the sibling cosmic-comp checkout's cosmic-comp-config, which
+# carries the EDID-serial output-identity fix (OutputInfo.serial,
+# find_output_configs) that this crate's match_configured_to_live (see
+# greeter.rs) depends on to actually receive a populated serial_number
+# end-to-end. Without this, cosmic-comp-config comes from pop-os/cosmic-comp's
+# unpatched master and randr::List entries always report an empty
+# serial_number, so match_configured_to_live's serial path is unreachable
+# (it still compiles and falls back to name+make+model, just without the
+# rename-tolerance fix).
+[patch."https://github.com/pop-os/cosmic-comp"]
+cosmic-comp-config = { path = "../cosmic-comp/cosmic-comp-config" }
+
 # [patch."https://github.com/pop-os/libcosmic"]
 # iced_core = { git = "https://github.com/pop-os/libcosmic//", branch = "theme-v2" }
 # iced_futures = { git = "https://github.com/pop-os/libcosmic//", branch = "theme-v2" }
