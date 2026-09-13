@@ -169,10 +169,9 @@ cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols//", rev =
 # name+make+model, just without the connector-rename tolerance the fix is
 # for). Pinned to a specific rev (matching this file's existing
 # cosmic-protocols patch convention above) rather than a floating branch,
-# so Cargo.lock stays reproducible independent of what dacfec6's branch
-# points to later.
+# so Cargo.lock stays reproducible independent of where that branch moves.
 [patch."https://github.com/pop-os/cosmic-comp"]
-cosmic-comp-config = { git = "https://github.com/Pheoxy/cosmic-comp", rev = "dacfec6" }
+cosmic-comp-config = { git = "https://github.com/Pheoxy/cosmic-comp", rev = "aa3a3200" }
 
 # [patch."https://github.com/pop-os/libcosmic"]
 # iced_core = { git = "https://github.com/pop-os/libcosmic//", branch = "theme-v2" }
