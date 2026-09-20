@@ -1230,7 +1230,7 @@ dependencies = [
 [[package]]
 name = "cosmic-comp-config"
 version = "1.0.0"
-source = "git+https://github.com/Pheoxy/cosmic-comp?rev=aa3a3200#aa3a32000c4d452c7a8e820f713639ef3074d6ec"
+source = "git+https://github.com/Pheoxy/cosmic-comp?rev=757cbda8#757cbda831b49336d5fbd93527819a6a9db16ede"
 dependencies = [
  "cosmic-config",
  "cosmic-randr-shell",

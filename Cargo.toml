@@ -171,7 +171,7 @@ cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols//", rev =
 # cosmic-protocols patch convention above) rather than a floating branch,
 # so Cargo.lock stays reproducible independent of where that branch moves.
 [patch."https://github.com/pop-os/cosmic-comp"]
-cosmic-comp-config = { git = "https://github.com/Pheoxy/cosmic-comp", rev = "aa3a3200" }
+cosmic-comp-config = { git = "https://github.com/Pheoxy/cosmic-comp", rev = "757cbda8" }
 
 # [patch."https://github.com/pop-os/libcosmic"]
 # iced_core = { git = "https://github.com/pop-os/libcosmic//", branch = "theme-v2" }
